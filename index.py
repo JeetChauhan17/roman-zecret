@@ -725,7 +725,7 @@ def display_note_content(stdscr, title, content, note_name):
             break # Exit display
 
 
-def edit_entry(stdscr, encryption_key):
+# def edit_entry(stdscr, encryption_key):
     """Handles selecting, editing, and re-saving an entry."""
     max_y, max_x = stdscr.getmaxyx()
 
@@ -832,7 +832,288 @@ def edit_entry(stdscr, encryption_key):
 
     except Exception as e:
         draw_message(stdscr, f"An error occurred during editing: {e}", max_y - 2, COLOR_PAIR_ERROR, delay=3)
+def edit_entry(stdscr, encryption_key):
+    """Handles selecting, editing, and re-saving an entry."""
+    max_y, max_x = stdscr.getmaxyx()
 
+    # Select the note first
+    selection_result = select_and_read_entry(stdscr, encryption_key, edit_mode=True)
+
+    if selection_result is None:
+        # User cancelled selection or an error occurred during selection/decryption
+        return
+
+    selected_note_file, old_title, old_content = selection_result
+    filepath = os.path.join(NOTES_DIR, selected_note_file)
+
+    clear_screen(stdscr)
+    draw_header(stdscr)
+    prompt_y = len(SKULL_HEADER) + 2
+    input_x = 2
+
+    try:
+        stdscr.addstr(prompt_y, input_x, f"💀 Editing Zecret: {selected_note_file} 💀", curses.color_pair(COLOR_PAIR_INFO) | curses.A_BOLD)
+        
+        # --- Offer to Edit Title ---
+        stdscr.addstr(prompt_y + 2, input_x, f"Current Title: {old_title}")
+        new_title = get_string_input(stdscr, prompt_y + 3, input_x, "New Title (Enter to keep current): ", max_len=80)
+        
+        if new_title is None: # Cancelled during title input
+            draw_message(stdscr, "Edit cancelled.", max_y - 2, COLOR_PAIR_INFO, delay=1.5)
+            return
+        elif not new_title:
+            new_title = old_title # Keep the old title
+        
+        # --- Choose Edit Mode ---
+        edit_options = ["Overwrite (replace entire content)", "Append (add to existing content)"]
+        edit_mode_choice = 0
+        
+        # Display edit mode options
+        while True:
+            for i, option in enumerate(edit_options):
+                y = prompt_y + 5 + i
+                style = curses.A_BOLD | curses.A_REVERSE if i == edit_mode_choice else curses.A_NORMAL
+                color = COLOR_PAIR_MENU_ACTIVE if i == edit_mode_choice else COLOR_PAIR_MENU_INACTIVE
+                prefix = "-> " if i == edit_mode_choice else "   "
+                
+                stdscr.move(y, input_x)
+                stdscr.clrtoeol()
+                stdscr.attron(curses.color_pair(color) | style)
+                stdscr.addstr(y, input_x, f"{prefix}{option}")
+                stdscr.attroff(curses.color_pair(color) | style)
+            
+            stdscr.refresh()
+            key = stdscr.getch()
+            
+            if key == curses.KEY_UP and edit_mode_choice > 0:
+                edit_mode_choice -= 1
+            elif key == curses.KEY_DOWN and edit_mode_choice < len(edit_options) - 1:
+                edit_mode_choice += 1
+            elif key in [curses.KEY_ENTER, 10, 13]:
+                break
+            elif key == 27:  # Escape
+                draw_message(stdscr, "Edit cancelled.", max_y - 2, COLOR_PAIR_INFO, delay=1.5)
+                return
+        
+        # Clear edit mode options
+        for i in range(len(edit_options)):
+            stdscr.move(prompt_y + 5 + i, input_x)
+            stdscr.clrtoeol()
+        
+        # --- Edit Content ---
+        is_append_mode = (edit_mode_choice == 1)
+        
+        # Prepare initial content based on edit mode
+        initial_content = ""
+        if is_append_mode:
+            initial_content = old_content + "\n\n--- APPENDED CONTENT ---\n\n"
+            edit_prompt = "Append to Content:"
+        else:
+            initial_content = old_content
+            edit_prompt = "Edit Content:"
+        
+        # Convert content to lines for the editor
+        initial_lines = initial_content.splitlines()
+        if not initial_lines:
+            initial_lines = [""]  # Ensure at least one line
+        
+        # Create a modified version of get_multiline_input that accepts initial content
+        new_content_lines = get_multiline_input_with_content(stdscr, prompt_y + 5, input_x, edit_prompt, initial_lines)
+
+        if new_content_lines is None:  # User cancelled
+            draw_message(stdscr, "Edit cancelled.", max_y - 2, COLOR_PAIR_INFO, delay=1.5)
+            return
+
+        new_content = "\n".join(new_content_lines)
+
+        if not new_content.strip():
+            draw_message(stdscr, "New content is empty. Edit cancelled.", max_y - 2, COLOR_PAIR_ERROR, delay=2)
+            return
+
+        # Combine title and content
+        full_entry_data = f"TITLE:{new_title}\n--CONTENT--\n{new_content}"
+
+        # --- Animation: Saving ---
+        draw_message(stdscr, "Encrypting your updated Zecret...", max_y - 3, COLOR_PAIR_INFO, spooky=True)
+        stdscr.refresh()
+        time.sleep(0.8)
+        # --- End Animation ---
+
+        encrypted_content = encrypt_data(full_entry_data, encryption_key)
+        if not encrypted_content:
+            draw_message(stdscr, "Encryption failed! Edit not saved.", max_y - 2, COLOR_PAIR_ERROR, delay=3)
+            return
+
+        # --- Animation: Saving ---
+        for i in range(3):
+            draw_message(stdscr, f"Updating the crypt{'.' * (i+1)}", max_y - 3, COLOR_PAIR_INFO, spooky=True)
+            stdscr.refresh()
+            time.sleep(0.4)
+        # --- End Animation ---
+
+        try:
+            # Overwrite the original file
+            with open(filepath, "wb") as f:
+                f.write(encrypted_content)
+            draw_message(stdscr, f"Zecret '{selected_note_file}' updated! ✨", max_y - 2, COLOR_PAIR_SUCCESS, delay=2)
+        except IOError as e:
+            draw_message(stdscr, f"Error saving updated file: {e}", max_y - 2, COLOR_PAIR_ERROR, delay=3)
+
+    except Exception as e:
+        draw_message(stdscr, f"An error occurred during editing: {e}", max_y - 2, COLOR_PAIR_ERROR, delay=3)
+
+
+def get_multiline_input_with_content(stdscr, y_start, x_start, prompt, initial_lines):
+    """Gets multi-line input with pre-filled content. Returns a list of lines."""
+    max_y, max_x = stdscr.getmaxyx()
+    lines = initial_lines.copy() if initial_lines else [""]
+    current_line_idx = 0
+    cursor_x = 0  # Position within the current line
+    
+    stdscr.attron(curses.color_pair(COLOR_PAIR_INPUT))
+    stdscr.addstr(y_start, x_start, prompt)
+    stdscr.addstr(y_start + 1, x_start, "(Press Ctrl+D or Ctrl+G to finish)")
+    stdscr.attroff(curses.color_pair(COLOR_PAIR_INPUT))
+    
+    curses.curs_set(1)  # Show cursor
+    
+    edit_win_y = y_start + 2
+    edit_win_h = max_y - edit_win_y - 1  # Leave space at bottom
+    edit_win_w = max_x - x_start - 2
+    
+    if edit_win_h <= 0 or edit_win_w <= 0:
+        return None  # Not enough space
+
+    # Keep track of top line displayed for scrolling
+    top_line_idx = 0 
+    
+    while True:
+        # --- Redraw the editing area ---
+        stdscr.move(edit_win_y, x_start)
+        for i in range(edit_win_h):
+            stdscr.clrtoeol()  # Clear line before writing
+            line_idx_to_draw = top_line_idx + i
+            if line_idx_to_draw < len(lines):
+                # Simple wrapping for display
+                wrapped_lines = textwrap.wrap(lines[line_idx_to_draw], width=edit_win_w)
+                if not wrapped_lines:  # Handle empty line case after wrap
+                    wrapped_lines = [""] 
+                # Display only the relevant part if wrapped (this part is simplified)
+                # For simplicity, just show the first wrapped segment or indicate more
+                display_line = wrapped_lines[0]
+                if len(wrapped_lines) > 1:
+                    display_line = display_line[:-3] + "..."  # Indicate more content
+                     
+                # Truncate if still too long (shouldn't happen with wrap)
+                display_line = display_line[:edit_win_w] 
+                 
+                try:
+                    stdscr.addstr(edit_win_y + i, x_start, display_line)
+                except curses.error:
+                    pass  # Ignore drawing errors at edges
+            else:
+                # Clear lines below content
+                stdscr.move(edit_win_y + i, x_start)
+                stdscr.clrtoeol()
+                 
+        # --- Place cursor ---
+        # Calculate cursor position based on current line and potential wrapping
+        current_line_content = lines[current_line_idx]
+        cursor_y_in_win = (current_line_idx - top_line_idx) 
+        # Simplified cursor X - doesn't handle wrapping accurately
+        cursor_x_in_win = cursor_x 
+        
+        # Clamp cursor position within window bounds
+        cursor_y_in_win = max(0, min(edit_win_h - 1, cursor_y_in_win))
+        cursor_x_in_win = max(0, min(edit_win_w - 1, cursor_x_in_win))
+
+        try:
+            stdscr.move(edit_win_y + cursor_y_in_win, x_start + cursor_x_in_win)
+        except curses.error:
+            # If cursor move fails, try moving to start of line
+            try: 
+                stdscr.move(edit_win_y + cursor_y_in_win, x_start)
+            except curses.error: 
+                pass  # Give up if even that fails
+
+        stdscr.refresh()
+        
+        # --- Get Input ---
+        try:
+            key = stdscr.getch()
+        except KeyboardInterrupt:
+            lines = None  # Cancel
+            break
+             
+        # --- Process Input ---
+        current_line = lines[current_line_idx]
+
+        if key in [curses.KEY_ENTER, 10, 13]:  # Newline
+            before_cursor = current_line[:cursor_x]
+            after_cursor = current_line[cursor_x:]
+            lines[current_line_idx] = before_cursor
+            current_line_idx += 1
+            lines.insert(current_line_idx, after_cursor)
+            cursor_x = 0
+        elif key in [curses.KEY_BACKSPACE, 127, 8]:  # Backspace
+            if cursor_x > 0:
+                lines[current_line_idx] = current_line[:cursor_x-1] + current_line[cursor_x:]
+                cursor_x -= 1
+            elif current_line_idx > 0:  # Backspace at start of line, merge with previous
+                prev_line = lines[current_line_idx-1]
+                cursor_x = len(prev_line)  # Move cursor to end of previous line
+                lines[current_line_idx-1] = prev_line + current_line
+                del lines[current_line_idx]
+                current_line_idx -= 1
+        elif key == curses.KEY_DC:  # Delete key (may not work on all terminals)
+            if cursor_x < len(current_line):
+                lines[current_line_idx] = current_line[:cursor_x] + current_line[cursor_x+1:]
+            # Add logic here to merge with next line if at end of current line
+        elif key == curses.KEY_UP:
+            if current_line_idx > 0:
+                current_line_idx -= 1
+                # Try to maintain horizontal position
+                cursor_x = min(cursor_x, len(lines[current_line_idx]))
+        elif key == curses.KEY_DOWN:
+            if current_line_idx < len(lines) - 1:
+                current_line_idx += 1
+                # Try to maintain horizontal position
+                cursor_x = min(cursor_x, len(lines[current_line_idx]))
+        elif key == curses.KEY_LEFT:
+            if cursor_x > 0:
+                cursor_x -= 1
+            elif current_line_idx > 0:  # Move to end of previous line
+                current_line_idx -= 1
+                cursor_x = len(lines[current_line_idx])
+        elif key == curses.KEY_RIGHT:
+            if cursor_x < len(current_line):
+                cursor_x += 1
+            elif current_line_idx < len(lines) - 1:  # Move to start of next line
+                current_line_idx += 1
+                cursor_x = 0
+        elif key in [4, 7]:  # Ctrl+D or Ctrl+G often used for EOF/finish
+            break  # Finish editing
+        elif 32 <= key <= 126:  # Printable characters
+            lines[current_line_idx] = current_line[:cursor_x] + chr(key) + current_line[cursor_x:]
+            cursor_x += 1
+        elif key == 27:  # Check for escape sequences (like arrows, if keypad isn't working)
+            # This requires more complex handling, ignore for now
+            pass
+            
+        # --- Adjust Scroll ---
+        if current_line_idx < top_line_idx:
+            top_line_idx = current_line_idx
+        elif current_line_idx >= top_line_idx + edit_win_h:
+            top_line_idx = current_line_idx - edit_win_h + 1
+             
+    curses.curs_set(0)  # Hide cursor
+    # Clear the editing area
+    for i in range(edit_win_h + 2):  # Include prompt lines
+        stdscr.move(y_start + i, x_start)
+        stdscr.clrtoeol()
+    stdscr.refresh()
+
+    return lines
 
 def import_entry(stdscr, encryption_key):
     """Imports an existing encrypted .rz file (assuming current key)."""
